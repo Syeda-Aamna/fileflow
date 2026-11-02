@@ -1,35 +1,54 @@
 # FileFlow — Public File Workspace
 
-React / Express / tRPC / Drizzle starter, adapted from the Sandbox web-db-user template.
+FileFlow is an anonymous, public file-sharing workspace built with React, Express, Multer, Vercel Blob, Drizzle, and MySQL. It is not private storage: every accepted upload can be opened by anyone who can reach its public link. The interface warns visitors not to upload confidential files.
 
-- `pnpm dev`: development server; honors `PORT` (default 3000).
-- `pnpm build` / `pnpm start`: build and serve `dist/index.js` and `dist/public/`.
-- `pnpm db:migrate`: apply checked-in migrations. `pnpm db:push`: generate and apply new schema changes.
-- `pnpm check` / `pnpm test`: types and application tests.
+## Run and check
 
-## Public upload flow
+- `pnpm dev` starts the development server and honors `PORT` (default 3000).
+- `pnpm check` type-checks the project; `pnpm test` runs the automated suite.
+- `pnpm build` builds the existing Manus container application; `pnpm start` serves `dist/index.js` and `dist/public/`.
+- `pnpm build:vercel` builds Vite assets and prepares root `public/` for Vercel's static CDN while retaining the Express app as the serverless handler.
+- `pnpm db:migrate` applies checked-in migrations. `pnpm db:push` generates and applies schema changes; use with care because the managed database is shared by development and production.
 
-FileFlow is an open file-sharing space. Visitors do not need to sign in. Every accepted upload appears in the public library and its stable `/manus-storage/...` link is public. The interface warns users not to upload confidential files.
+## Upload architecture
 
-The browser sends one `multipart/form-data` request to `POST /api/files`, using the field name `file`. Express invokes Multer only on that route. Multer holds the upload in memory with a 50 MB maximum, a single-file limit, and an extension allow-list. The server then checks binary file signatures with `file-type`; text files must be non-empty UTF-8 without NUL bytes. Supported formats are PDF, PNG/JPEG/GIF/WebP, TXT/CSV/Markdown, and ZIP. Invalid types, spoofed extensions, and oversized files are rejected before storage.
+### Manus development/container runtime
 
-After validation, the server sanitizes the display filename, creates a UUID-based object key, and writes bytes to durable project object storage through `server/storage.ts`. It records the display filename, validated MIME type, byte size, storage key, public URL, and upload time in the managed MySQL database. `GET /api/files` returns the 100 latest records plus library totals. File bytes are not stored on the application container.
+The browser sends one `multipart/form-data` request to `POST /api/files`, using the field name `file`. Express invokes Multer only on that route. Multer holds the file in memory with a 50 MB maximum and a single-file limit. An extension allow-list and binary-signature validation reject unsupported or spoofed files before storage. Text files must be non-empty UTF-8 without NUL bytes. Supported formats are PDF, PNG/JPEG/GIF/WebP, TXT/CSV/Markdown, and ZIP.
 
-If the object is stored successfully but writing its database record fails, the API returns HTTP 202 with the direct public URL. The interface keeps that link visible and explains that the file may not appear in the library until the metadata service is available again.
+The server sanitizes the display name, creates a UUID-based storage key, and transfers bytes to durable Manus object storage. It then persists the ID, display filename, validated MIME type, size, public URL/key, and timestamp in the `public_files` table. `GET /api/files` returns the 100 latest records and library totals. File bytes are never stored on the application container.
 
-The runtime storage API does not provide an application delete operation, so the public demo does not offer a delete button or claim that uploaded objects can be removed through this app.
+### Vercel runtime
+
+Vercel limits request bodies sent to Functions, so new 50 MB files are uploaded directly from the browser to the project's public Vercel Blob store with `@vercel/blob/client` and multipart progress. Express issues a narrowly scoped upload token for a 50 MB single-file upload and an allow-listed content type. The Blob completion callback verifies the stored content signature, then adds the public URL to the same database-backed index. Invalid files are not listed. Blob storage is configured by Vercel's `BLOB_READ_WRITE_TOKEN` integration.
+
+Existing records backed by Manus storage are not migrated or deleted. Their stable `/manus-storage/<key>` paths are routed through the Express app on Vercel and redirected to fresh signed downloads. The database retains stable links rather than one-hour temporary signed URLs.
+
+In either runtime, if an object has already been stored but its metadata write fails, the API returns a direct public link and the UI shows a partial-success warning. The runtime Manus storage API does not provide an application deletion operation, so this app has no delete button and does not promise physical deletion.
+
+## Vercel project setup
+
+The connected Vercel project uses the root `index.ts` default Express export, Vercel's CDN for files in root `public/`, Node.js 22.x, and the `pnpm build:vercel` build command. Do not configure a separate output directory: `public/**` is the Express framework's static-file convention.
+
+Set these variables for Production and Preview in Vercel project settings, marked sensitive and kept server-side:
+
+- `DATABASE_URL`
+- `MANUS_API_URL`
+- `MANUS_API_KEY`
+
+The attached public Blob store already provisions `BLOB_READ_WRITE_TOKEN` for Production, Preview, and Development. Do not duplicate or expose that value.
+
+Never commit these values or expose them through browser configuration. Vercel's public Blob store and the file index are anonymous by design; do not use them for confidential content.
 
 ## Project layout
 
-- `client/src/pages/Home.tsx` implements the upload controls, progress, public file list, and copy-link actions.
-- `client/src/pages/home.css` contains the responsive visual system.
-- `server/_core/fileRoutes.ts` registers the Express file endpoints and route-scoped Multer middleware.
-- `server/files.ts` reads and writes file metadata through Drizzle.
-- `server/storage.ts` transfers file bytes to durable object storage and supplies stable public paths.
-- `drizzle/schema.ts` and `drizzle/0001_supreme_aaron_stack.sql` define the public file index.
-
-Run `pnpm dev` in the managed preview. The server needs the supplied `DATABASE_URL`, `MANUS_API_URL`, and server-only `MANUS_API_KEY`; never expose the storage key in browser code.
-
-`server/_core/publicConfig.ts` exposes only named public runtime values. Private keys stay server-side. The platform serves managed `/manus-storage/` assets; the application does not register a second proxy.
-
-Platform configuration is readable and editable through `webdev.config`. Default settings are initial values, not enforced constraints. The agent may modify the files, commands and configuration or follow the flexible guide for another stack.
+- `client/src/pages/Home.tsx` implements the public upload UI, runtime provider selection, progress, library, and share links.
+- `client/src/pages/home.css` contains the responsive visual system; `client/public/manus-routes.json` declares the browser route.
+- `server/app.ts` creates the shared Express application; root `index.ts` exports it for Vercel, while `server/_core/index.ts` starts the Manus development/container listener.
+- `server/_core/fileRoutes.ts` registers the route-scoped Multer API and runtime upload-provider endpoint.
+- `server/_core/vercelBlobRoutes.ts` issues Vercel Blob upload tokens and validates completion callbacks.
+- `server/_core/manusStorageRoutes.ts` redirects legacy Manus paths to signed downloads on Vercel.
+- `server/_core/uploadValidation.ts` owns the shared filename, size, MIME, and content-signature rules.
+- `server/files.ts` reads and writes indexed file metadata through Drizzle.
+- `server/storage.ts` transfers Manus-hosted file bytes and generates signed downloads.
+- `drizzle/schema.ts` and its checked-in SQL migration define the public file index.

@@ -7,7 +7,15 @@ const PAGE_SIZE = 100;
 export async function addPublicFile(file: InsertPublicFile): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
-  await db.insert(publicFiles).values(file);
+  await db.insert(publicFiles).values(file).onDuplicateKeyUpdate({
+    set: {
+      fileName: file.fileName,
+      fileType: file.fileType,
+      fileSize: file.fileSize,
+      storageKey: file.storageKey,
+      publicUrl: file.publicUrl,
+    },
+  });
 }
 
 export async function listPublicFiles() {

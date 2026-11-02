@@ -17,6 +17,7 @@ import {
   Sparkles,
   TriangleAlert,
 } from "lucide-react";
+import { upload as uploadToVercelBlob } from "@vercel/blob/client";
 import "./home.css";
 
 type PublicFile = {
@@ -40,8 +41,70 @@ type Notice = {
   link?: string;
 } | null;
 
+type UploadApiPayload = {
+  error?: string;
+  message?: string;
+  indexed?: boolean;
+  file?: PublicFile;
+};
+
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const ACCEPTED_FILES = ".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.csv,.md,.zip";
+const MIME_BY_EXTENSION: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".txt": "text/plain",
+  ".csv": "text/csv",
+  ".md": "text/markdown",
+  ".zip": "application/zip",
+};
+
+function getUploadDetails(fileName: string) {
+  const extension = fileName.toLowerCase().match(/\.[^./\\]+$/)?.[0];
+  const fileType = extension ? MIME_BY_EXTENSION[extension] : undefined;
+  return extension && fileType ? { extension, fileType } : null;
+}
+
+function uploadWithMulter(
+  file: File,
+  onProgress: (percentage: number) => void,
+): Promise<UploadApiPayload> {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/files");
+    request.setRequestHeader("Accept", "application/json");
+    request.upload.onprogress = event => {
+      if (event.lengthComputable)
+        onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    request.onerror = () =>
+      reject(
+        new Error(
+          "The upload could not reach the server. Check your connection and try again.",
+        ),
+      );
+    request.onload = () => {
+      let payload: UploadApiPayload = {};
+      try {
+        payload = JSON.parse(request.responseText) as UploadApiPayload;
+      } catch {
+        payload = {};
+      }
+      if (request.status >= 200 && request.status < 300) {
+        resolve(payload);
+      } else {
+        reject(new Error(payload.error || "Upload failed. Please try again."));
+      }
+    };
+    request.send(formData);
+  });
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -98,7 +161,7 @@ function UploadRow({ file }: { file: PublicFile }) {
   const [copied, setCopied] = useState(false);
 
   const copyLink = async () => {
-    const link = `${window.location.origin}${file.publicUrl}`;
+    const link = new URL(file.publicUrl, window.location.origin).toString();
     try {
       await navigator.clipboard.writeText(link);
       setCopied(true);
@@ -176,7 +239,7 @@ export default function Home() {
   const [notice, setNotice] = useState<Notice>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const loadLibrary = useCallback(async () => {
+  const loadLibrary = useCallback(async (): Promise<LibraryResponse | null> => {
     setLoading(true);
     setLoadError("");
     try {
@@ -189,12 +252,14 @@ export default function Home() {
       if (!response.ok)
         throw new Error(data.error || "Could not load the public library.");
       setLibrary(data);
+      return data;
     } catch (error) {
       setLoadError(
         error instanceof Error
           ? error.message
-          : "Could not load the public library."
+          : "Could not load the public library.",
       );
+      return null;
     } finally {
       setLoading(false);
     }
@@ -204,7 +269,7 @@ export default function Home() {
     void loadLibrary();
   }, [loadLibrary]);
 
-  const uploadFile = (file?: File) => {
+  const uploadFile = async (file?: File) => {
     if (!file || uploading) return;
     setNotice(null);
     if (file.size > MAX_FILE_SIZE) {
@@ -215,61 +280,99 @@ export default function Home() {
       if (inputRef.current) inputRef.current.value = "";
       return;
     }
+    const details = getUploadDetails(file.name);
+    if (!details) {
+      setNotice({
+        tone: "error",
+        message: "This file type is not supported. Choose a PDF, image, text/CSV/Markdown file, or ZIP archive.",
+      });
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
 
     setUploading(true);
     setProgress(0);
-    const formData = new FormData();
-    formData.append("file", file);
-    const request = new XMLHttpRequest();
-    request.open("POST", "/api/files");
-    request.setRequestHeader("Accept", "application/json");
-    request.upload.onprogress = event => {
-      if (event.lengthComputable)
-        setProgress(Math.round((event.loaded / event.total) * 100));
-    };
-    request.onerror = () => {
-      setNotice({
-        tone: "error",
-        message:
-          "The upload could not reach the server. Check your connection and try again.",
+    try {
+      const modeResponse = await fetch("/api/files/upload-mode", {
+        headers: { Accept: "application/json" },
       });
-      setUploading(false);
-      if (inputRef.current) inputRef.current.value = "";
-    };
-    request.onload = () => {
-      let payload: {
+      const mode = (await modeResponse.json()) as {
+        provider?: string;
         error?: string;
-        message?: string;
-        indexed?: boolean;
-        file?: PublicFile;
-      } = {};
-      try {
-        payload = JSON.parse(request.responseText) as typeof payload;
-      } catch {
-        payload = {};
-      }
-      if (request.status >= 200 && request.status < 300) {
-        const partialFile =
-          payload.indexed === false ? payload.file : undefined;
+      };
+      if (!modeResponse.ok)
+        throw new Error(mode.error || "The upload service is unavailable.");
+
+      if (mode.provider === "manus") {
+        const payload = await uploadWithMulter(file, setProgress);
+        const partialFile = payload.indexed === false ? payload.file : undefined;
         setNotice({
           tone: partialFile ? "warning" : "success",
           message: payload.message || "Uploaded. Your file is now public.",
           link: partialFile
-            ? `${window.location.origin}${partialFile.publicUrl}`
+            ? new URL(partialFile.publicUrl, window.location.origin).toString()
             : undefined,
         });
         setProgress(100);
-        void loadLibrary();
-      } else {
+        await loadLibrary();
+        return;
+      }
+
+      if (mode.provider !== "vercel-blob") {
+        throw new Error("Public upload storage is not configured for this deployment.");
+      }
+
+      const id = crypto.randomUUID();
+      const blob = await uploadToVercelBlob(
+        `fileflow/${id}${details.extension}`,
+        file,
+        {
+          access: "public",
+          handleUploadUrl: "/api/files/blob-upload",
+          clientPayload: JSON.stringify({
+            id,
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: details.fileType,
+          }),
+          contentType: details.fileType,
+          multipart: file.size > 5 * 1024 * 1024,
+          onUploadProgress: event => setProgress(Math.round(event.percentage)),
+        },
+      );
+      setProgress(100);
+      const refreshedLibrary = await loadLibrary();
+      const indexed =
+        refreshedLibrary?.files.some(item => item.publicUrl === blob.url) ??
+        false;
+
+      if (indexed) {
         setNotice({
-          tone: "error",
-          message: payload.error || "Upload failed. Please try again.",
+          tone: "success",
+          message: "Uploaded successfully. This file is now public.",
+        });
+      } else {
+        const reachable = await fetch(blob.url, { method: "HEAD" })
+          .then(response => response.ok)
+          .catch(() => true);
+        setNotice({
+          tone: reachable ? "warning" : "error",
+          message: reachable
+            ? "Your file is public, but the library could not be updated. Use the direct link below."
+            : "The file could not be verified and was not added to the public library.",
+          link: reachable ? blob.url : undefined,
         });
       }
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        message:
+          error instanceof Error ? error.message : "Upload failed. Please try again.",
+      });
+    } finally {
       setUploading(false);
       if (inputRef.current) inputRef.current.value = "";
-    };
-    request.send(formData);
+    }
   };
 
   const openPicker = () => inputRef.current?.click();
