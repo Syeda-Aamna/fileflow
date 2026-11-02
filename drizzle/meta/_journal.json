@@ -8,6 +8,13 @@
       "when": 1788785580464,
       "tag": "0000_initial_users",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1793659887561,
+      "tag": "0001_supreme_aaron_stack",
+      "breakpoints": true
     }
   ]
 }

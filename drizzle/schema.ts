@@ -1,4 +1,11 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import {
+  int,
+  mysqlEnum,
+  mysqlTable,
+  text,
+  timestamp,
+  varchar,
+} from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -6,10 +13,7 @@ import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-or
  * Columns use camelCase to match both database fields and generated types.
  */
 export const users = mysqlTable("users", {
-  /**
-   * Surrogate primary key. Auto-incremented numeric value managed by the database.
-   * Use this for relations between tables.
-   */
+  /** Surrogate primary key. Auto-incremented numeric value managed by the database. */
   id: int("id").autoincrement().primaryKey(),
   /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
   openId: varchar("openId", { length: 64 }).notNull().unique(),
@@ -25,4 +29,16 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-// TODO: Add your tables here
+/** Public file index. File bytes live in durable object storage; every record is world-readable. */
+export const publicFiles = mysqlTable("public_files", {
+  id: varchar("id", { length: 36 }).primaryKey().notNull(),
+  fileName: varchar("fileName", { length: 180 }).notNull(),
+  fileType: varchar("fileType", { length: 128 }).notNull(),
+  fileSize: int("fileSize").notNull(),
+  storageKey: varchar("storageKey", { length: 512 }).notNull().unique(),
+  publicUrl: varchar("publicUrl", { length: 640 }).notNull(),
+  uploadedAt: timestamp("uploadedAt").defaultNow().notNull(),
+});
+
+export type PublicFile = typeof publicFiles.$inferSelect;
+export type InsertPublicFile = typeof publicFiles.$inferInsert;
