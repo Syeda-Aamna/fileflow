@@ -1,6 +1,7 @@
 import express from "express";
-import { createApp } from "./server/app";
+import vercelHandler from "./server/vercel-handler.mjs";
 
-const app = createApp(express());
+const app = express();
+app.use(vercelHandler);
 
 export default app;

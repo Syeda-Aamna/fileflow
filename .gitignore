@@ -4,6 +4,7 @@
 
 # Build outputs
 dist/
+server/vercel-handler.mjs
 build/
 *.dist
 /public/
