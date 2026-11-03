@@ -9,8 +9,7 @@ import { registerOAuthRoutes } from "./_core/oauth";
 import { publicPlatformScript } from "./_core/publicConfig";
 import { registerVercelBlobRoutes } from "./_core/vercelBlobRoutes";
 
-export function createApp() {
-  const app = express();
+export function createApp(app = express()) {
   // File uploads use route-scoped Multer on Manus and Blob's direct client upload
   // protocol on Vercel; ordinary APIs keep small JSON/form limits.
   app.use(express.json({ limit: "1mb" }));
